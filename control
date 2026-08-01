@@ -1,6 +1,6 @@
 Package: com.guacforlife.mapsrecentre
 Name: MapsRecentre
-Version: 0.2.0
+Version: 0.2.1
 Architecture: iphoneos-arm64
 Description: Auto-recentres the Google Maps camera after you pan away during navigation, and can press Start for you on Siri-initiated directions.
 Maintainer: guacforlife

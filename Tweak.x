@@ -245,6 +245,13 @@ static NSString *mrDestinationName(AZMotorableTripDetailsPresenter *presenter) {
 // what the user has downloaded under
 // Settings > Accessibility > Spoken Content > Voices — an Enhanced or Premium
 // voice sounds dramatically better than the default and is the real lever here.
+// Apple's "eloquence" set is the novelty range — Bubbles, Bad News, Trinoids,
+// Grandpa. They are real installed voices and would otherwise be eligible, which
+// is not what anyone wants read out at the start of a drive.
+static BOOL mrIsNoveltyVoice(AVSpeechSynthesisVoice *v) {
+    return [v.identifier containsString:@"com.apple.eloquence"];
+}
+
 static AVSpeechSynthesisVoice *mrPickVoice(void) {
     @try {
         NSString *stored = mrConfigString(@"voiceIdentifier", nil);
@@ -256,13 +263,19 @@ static AVSpeechSynthesisVoice *mrPickVoice(void) {
         NSString *lang = [AVSpeechSynthesisVoice currentLanguageCode];
         NSString *prefix = [lang componentsSeparatedByString:@"-"].firstObject;
         AVSpeechSynthesisVoice *best = nil;
-        NSInteger bestScore = -1;
+        NSInteger bestScore = NSIntegerMin;
         for (AVSpeechSynthesisVoice *v in [AVSpeechSynthesisVoice speechVoices]) {
             if (![v.language hasPrefix:prefix]) continue;
+            if (mrIsNoveltyVoice(v)) continue;   // never announce in Bubbles or Bad News
+
             NSInteger score = 0;
-            if ([v.language isEqualToString:lang]) score += 8;       // exact locale
-            if (v.gender == AVSpeechSynthesisVoiceGenderFemale) score += 4;
-            score += v.quality * 1;                                  // default < enhanced < premium
+            if ([v.language isEqualToString:lang]) score += 16;      // exact locale dominates
+            // Apple puts the quality in the NAME ("Serena (Premium)"), which is
+            // more dependable here than the quality enum — that enum has been
+            // seen reporting Premium for compact voices on iOS 16.
+            if ([v.name containsString:@"(Premium)"]) score += 8;
+            else if ([v.name containsString:@"(Enhanced)"]) score += 6;
+            if (v.gender == AVSpeechSynthesisVoiceGenderFemale) score += 2;
             if (score > bestScore) { bestScore = score; best = v; }
         }
         return best ?: [AVSpeechSynthesisVoice voiceWithLanguage:lang];
@@ -329,10 +342,8 @@ static void mrAnnounce(NSString *destination, void (^completion)(void)) {
         AVSpeechSynthesisVoice *voice = mrPickVoice();
         if (voice) utt.voice = voice;
         [synth speakUtterance:utt];
-        NSString *quality = voice.quality == AVSpeechSynthesisVoiceQualityDefault ? @"Default"
-                          : (voice.quality == AVSpeechSynthesisVoiceQualityEnhanced ? @"Enhanced" : @"Premium");
-        mrLog(@"announcing \"%@\" as %@ (%@, %@)", text,
-              voice.name ?: @"default voice", voice.language ?: @"?", quality);
+        mrLog(@"announcing \"%@\" as %@ (%@)", text,
+              voice.name ?: @"default voice", voice.language ?: @"?");
 
         // Watchdog: never let a stalled utterance block the start.
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
@@ -467,28 +478,31 @@ static void mrShowVoiceSheet(UIView *sender) {
         NSString *prefix = [lang componentsSeparatedByString:@"-"].firstObject;
         NSMutableArray<AVSpeechSynthesisVoice *> *voices = [NSMutableArray array];
         for (AVSpeechSynthesisVoice *v in [AVSpeechSynthesisVoice speechVoices]) {
-            if ([v.language hasPrefix:prefix]) [voices addObject:v];
+            if ([v.language hasPrefix:prefix] && !mrIsNoveltyVoice(v)) [voices addObject:v];
         }
+        // Exact locale first, then the ones Apple has marked Premium/Enhanced in
+        // their own name, then alphabetically.
         [voices sortUsingComparator:^NSComparisonResult(AVSpeechSynthesisVoice *a, AVSpeechSynthesisVoice *b) {
-            if (a.quality != b.quality) return a.quality > b.quality ? NSOrderedAscending : NSOrderedDescending;
-            if (a.gender != b.gender) return a.gender == AVSpeechSynthesisVoiceGenderFemale ? NSOrderedAscending : NSOrderedDescending;
+            BOOL ax = [a.language isEqualToString:lang], bx = [b.language isEqualToString:lang];
+            if (ax != bx) return ax ? NSOrderedAscending : NSOrderedDescending;
+            BOOL ah = [a.name containsString:@"("], bh = [b.name containsString:@"("];
+            if (ah != bh) return ah ? NSOrderedAscending : NSOrderedDescending;
             return [a.name compare:b.name];
         }];
 
         UIAlertController *sheet = [UIAlertController
             alertControllerWithTitle:@"Announcement voice"
-                             message:@"Enhanced and Premium voices sound far more natural. "
-                                     @"Download more under Settings > Accessibility > "
-                                     @"Spoken Content > Voices."
+                             message:@"Voices marked (Enhanced) or (Premium) sound far more "
+                                     @"natural. Download more under Settings > Accessibility "
+                                     @"> Spoken Content > Voices."
                       preferredStyle:UIAlertControllerStyleActionSheet];
 
         NSString *currentID = mrPickVoice().identifier;
         for (AVSpeechSynthesisVoice *v in voices) {
-            NSString *quality = v.quality == AVSpeechSynthesisVoiceQualityDefault ? @"Default"
-                              : (v.quality == AVSpeechSynthesisVoiceQualityEnhanced ? @"Enhanced" : @"Premium");
-            NSString *gender = v.gender == AVSpeechSynthesisVoiceGenderFemale ? @"female"
-                             : (v.gender == AVSpeechSynthesisVoiceGenderMale ? @"male" : @"neutral");
-            NSString *title = [NSString stringWithFormat:@"%@ — %@, %@, %@", v.name, quality, gender, v.language];
+            // Apple already puts the quality in the name, e.g. "Stephanie (Enhanced)".
+            // Appending our own reading of the quality enum only contradicts it —
+            // that enum has been seen reporting Premium for compact voices.
+            NSString *title = [NSString stringWithFormat:@"%@ — %@", v.name, v.language];
             UIAlertAction *a = [UIAlertAction actionWithTitle:title
                                                         style:UIAlertActionStyleDefault
                                                       handler:^(UIAlertAction *x) {
